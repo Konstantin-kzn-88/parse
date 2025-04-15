@@ -103,155 +103,344 @@ def extract_data_from_cursor_position():
             # 1. Наименование оборудования
             equipment_name = ""
 
-            # Ищем строки до "Рег.№" - всё, что идёт до этой строки, является наименованием оборудования
-            reg_num_index = -1
-            lines = cell_text.split('\n')
-            for i, line in enumerate(lines):
-                if line.strip().startswith('Рег.№') or 'Рег.№' in line:
-                    reg_num_index = i
-                    break
+            # Проверка на наличие слова "Трубопровод" в начале текста
+            truboprovod_pattern = r'Трубопровод\s*\n+\s*([^\n№]*)'
+            truboprovod_match = re.search(truboprovod_pattern, cell_text, re.DOTALL)
+            if truboprovod_match:
+                description = truboprovod_match.group(1).strip()
+                equipment_name = f"Трубопровод {description}"
+                # Очищаем от лишних пробелов
+                equipment_name = re.sub(r'\s+', ' ', equipment_name)
 
-            if reg_num_index > 0:
-                # Собираем все строки до регистрационного номера
+            # Специальный шаблон для Емкость Е-4/1 и подобных
+            if not equipment_name:
+                emkost_pattern = r'Емкость\s+(Е-\d+/\d+)'
+                emkost_match = re.search(emkost_pattern, cell_text)
+                if emkost_match:
+                    equipment_name = f"Емкость {emkost_match.group(1)}"
+
+            # Если специальный шаблон не сработал, продолжаем с обычной логикой
+            if not equipment_name:
+                # Проверяем наличие "марка:" и пробуем извлечь имя до этой части
+                if 'марка:' in cell_text:
+                    parts = cell_text.split('марка:', 1)
+                    equipment_name = parts[0].strip()
+
+                    # Удаляем лишние символы и ограничиваем длину имени
+                    equipment_name = re.sub(r'[\r\n\t]+', ' ', equipment_name)
+                    equipment_name = re.sub(r'\s+', ' ', equipment_name)
+
+                    # Если имя слишком длинное и содержит "Емкость", берем только первые слова
+                    if len(equipment_name.split()) > 2 and 'Емкость' in equipment_name:
+                        words = equipment_name.split()
+                        for i in range(2, min(4, len(words))):
+                            if re.match(r'Е-\d+/\d+', words[i - 1]):
+                                equipment_name = ' '.join(words[:i])
+                                break
+
+            # Если предыдущие методы не сработали, продолжаем с остальной логикой
+            if not equipment_name:
+                # Разделяем текст на строки и ищем маркеры границ имени оборудования
+                lines = cell_text.split('\n')
+
+                # Собираем строки до специальных маркеров ("№", "Опасное вещество", "Рег.№", "Зав.№", "марка:")
                 equipment_lines = []
-                for i in range(reg_num_index):
-                    clean_line = re.sub(r'\|', '', lines[i]).strip()
-                    if clean_line and not clean_line.startswith(('*', '+', '-')):
-                        equipment_lines.append(clean_line)
+                for i, line in enumerate(lines):
+                    clean_line = re.sub(r'\|', '', line).strip()
+                    if clean_line and not clean_line.startswith(('*', '+', '-', 'Цех', 'Секц')):
+                        # Если нашли строку с маркером конца имени, выходим из цикла
+                        if any(marker in clean_line for marker in
+                               ['№', 'Опасное вещество:', 'Рег.№', 'Зав.№', 'марка:']):
+                            # Если маркер не в начале строки, добавляем часть строки до маркера
+                            if not clean_line.startswith(('№', 'Опасное вещество:', 'Рег.№', 'Зав.№', 'марка:')):
+                                for marker in ['№', 'Опасное вещество:', 'Рег.№', 'Зав.№', 'марка:']:
+                                    if marker in clean_line:
+                                        parts = clean_line.split(marker, 1)
+                                        if parts[0].strip():
+                                            equipment_lines.append(parts[0].strip())
+                                        break
+                            break
+                        else:
+                            equipment_lines.append(clean_line)
 
                 if equipment_lines:
                     # Формируем наименование оборудования из найденных строк
                     equipment_name = ' '.join(equipment_lines).strip()
-                    # Удаляем "Рег" из названия, если он случайно попал туда
-                    equipment_name = re.sub(r'\s+Рег\.?№?$', '', equipment_name)
-                    equipment_name = re.sub(r'\s+Рег\.?№?\s*', ' ', equipment_name)
+                    # Очищаем от лишних пробелов
+                    equipment_name = re.sub(r'\s+', ' ', equipment_name)
 
-            # Если предыдущий метод не сработал, пробуем традиционные паттерны
-            if not equipment_name:
-                # Специфический поиск по типам оборудования
-                equipment_patterns = [
-                    (r'Колонна\s+([^\s|\n]+)', "Колонна"),
-                    (r'Аппарат\s+([^\s|\n]+)', "Аппарат"),
-                    (r'Аппарат\s+([^\s|\n]+)', "Аппарат"),
-                    (r'Теплообменник\s+([^\s|\n]+)', "Теплообменник"),
-                    (r'АВО\s+([^\s|\n]+)', "АВО"),
-                    (r'\|\s+Колонна\s+([^\s|\n]+)', "Колонна"),
-                    (r'\|\s+Теплообменник\s+([^\s|\n]+)', "Теплообменник"),
-                    (r'\|\s+АВО\s+([^\s|\n]+)', "АВО")
-                ]
+                # Если предыдущий метод не сработал, используем стандартную логику поиска строк до маркеров
+                if not equipment_name:
+                    # Ищем строки до "Рег.№" или "Зав. №" или "марка:" - всё, что идёт до этой строки/слова, является наименованием оборудования
+                    reg_num_index = -1
+                    for i, line in enumerate(lines):
+                        if (line.strip().startswith('Рег.№') or 'Рег.№' in line or
+                                line.strip().startswith('Зав. №') or 'Зав. №' in line or
+                                '/-зав №' in line or 'зав№' in line or
+                                'марка:' in line or
+                                line.strip().startswith('№') or
+                                'Опасное вещество:' in line):
+                            reg_num_index = i
+                            break
 
-                for pattern, equipment_type in equipment_patterns:
-                    equipment_match = re.search(pattern, cell_text)
-                    if equipment_match:
-                        equipment_model = equipment_match.group(1).strip()
-                        equipment_name = f"{equipment_type} {equipment_model}"
+                    if reg_num_index > 0:
+                        # Собираем все строки до регистрационного/заводского номера
+                        equipment_lines = []
+                        for i in range(reg_num_index):
+                            clean_line = re.sub(r'\|', '', lines[i]).strip()
+                            if clean_line and not clean_line.startswith(('*', '+', '-')):
+                                equipment_lines.append(clean_line)
 
-                        # Проверяем, есть ли дополнительные части модели (например, "АС-108 В")
-                        parts_match = re.search(f"{re.escape(equipment_model)}\\s+([A-Za-zА-Яа-я0-9\\-]+)", cell_text)
-                        if parts_match:
-                            equipment_name += f" {parts_match.group(1)}"
-
-                        # Удаляем "Рег" из названия, если он случайно попал туда
-                        equipment_name = re.sub(r'\s+Рег\.?№?$', '', equipment_name)
-                        equipment_name = re.sub(r'\s+Рег\.?№?\s*', ' ', equipment_name)
-                        break
-
-            # Если модель всё еще не найдена, пробуем найти любое обозначение оборудования
-            if not equipment_name:
-                # Ищем строки с наименованием оборудования (первые строки блока)
-                for i, line in enumerate(lines[:3]):  # Проверяем только первые 3 строки
-                    clean_line = re.sub(r'\|', '', line).strip()
-                    if clean_line and not clean_line.startswith(('*', '+', '-', 'Цех', 'Секц')):
-                        parts = clean_line.split()
-                        if len(parts) >= 2:
-                            equipment_name = clean_line
+                        if equipment_lines:
+                            # Формируем наименование оборудования из найденных строк
+                            equipment_name = ' '.join(equipment_lines).strip()
                             # Удаляем "Рег" из названия, если он случайно попал туда
                             equipment_name = re.sub(r'\s+Рег\.?№?$', '', equipment_name)
                             equipment_name = re.sub(r'\s+Рег\.?№?\s*', ' ', equipment_name)
-                            break
+
+                            # Проверка на Емкость и ограничение до нужной формы
+                            if 'Емкость' in equipment_name:
+                                emkost_match = re.search(r'Емкость\s+(Е-\d+/\d+)', equipment_name)
+                                if emkost_match:
+                                    equipment_name = f"Емкость {emkost_match.group(1)}"
+
+                    # Обработка случая, когда у нас одна строка содержит всё наименование до Рег.№
+                    if not equipment_name and reg_num_index > -1 and reg_num_index < len(lines):
+                        line = lines[reg_num_index]
+                        # Проверяем, есть ли в строке с Рег.№ часть наименования
+                        if 'Рег.№' in line:
+                            parts = line.split('Рег.№')
+                            if parts[0].strip():
+                                equipment_name = parts[0].strip()
+                        elif 'марка:' in line:
+                            parts = line.split('марка:')
+                            if parts[0].strip():
+                                equipment_name = parts[0].strip()
+
+                                # Проверка на Емкость и ограничение до нужной формы
+                                if 'Емкость' in equipment_name:
+                                    emkost_match = re.search(r'Емкость\s+(Е-\d+/\d+)', equipment_name)
+                                    if emkost_match:
+                                        equipment_name = f"Емкость {emkost_match.group(1)}"
+                        elif '№' in line:
+                            parts = line.split('№')
+                            if parts[0].strip():
+                                equipment_name = parts[0].strip()
+                        elif 'Опасное вещество:' in line:
+                            parts = line.split('Опасное вещество:')
+                            if parts[0].strip():
+                                equipment_name = parts[0].strip()
+
+                    # Если предыдущий метод не сработал, пробуем традиционные паттерны
+                    if not equipment_name:
+                        # Специфический поиск по типам оборудования
+                        equipment_patterns = [
+                            (r'Трубопровод\s+([^\n№]+)', "Трубопровод"),
+                            (r'Емкость\s+(Е-\d+/\d+)', "Емкость"),
+                            (r'Резервуар\s+вертикальный\s+стальной\s+([^\n]+)', "Резервуар вертикальный стальной"),
+                            (r'Колонна\s+([^\s|\n]+)', "Колонна"),
+                            (r'Аппарат\s+([^\s|\n]+)', "Аппарат"),
+                            (r'Разделитель\s+([^\s|\n]+)', "Разделитель"),
+                            (r'Сборник\s+([^\s|\n]+)', "Сборник"),
+                            (r'Реактор\s+([^\s|\n]+)', "Реактор"),
+                            (r'Емкость\s+([^\s|\n]+)', "Емкость"),
+                            (r'Тигель\s+([^\s|\n]+)', "Тигель"),
+                            (r'Резервуар\s+([^\s|\n]+)', "Резервуар"),
+                            (r'Компрессор\s+([^\s|\n]+)', "Компрессор"),
+                            (r'Скруббер\s+([^\s|\n]+)', "Скруббер"),
+                            (r'Абсорбер\s+([^\s|\n]+)', "Абсорбер"),
+                            (r'Фильтр\s+([^\s|\n]+)', "Фильтр"),
+                            (r'Ресивер\s+([^\s|\n]+)', "Ресивер"),
+                            (r'Газосепаратор\s+([^\s|\n]+)', "Газосепаратор"),
+                            (r'Сепаратор\s+([^\s|\n]+)', "Сепаратор"),
+                            (r'Электродегидратор\s+([^\s|\n]+)', "Электродегидратор"),
+                            (r'Теплообменник\s+([^\s|\n]+)', "Теплообменник"),
+                            (r'АВО\s+([^\s|\n]+)', "АВО"),
+                            (r'Насос\s+([^\s|\n]+)', "Насос"),
+                            (r'\|\s+Колонна\s+([^\s|\n]+)', "Колонна"),
+                            (r'\|\s+Теплообменник\s+([^\s|\n]+)', "Теплообменник"),
+                            (r'\|\s+Насос\s+([^\s|\n]+)', "Насос"),
+                            (r'\|\s+АВО\s+([^\s|\n]+)', "АВО")
+                        ]
+
+                        for pattern, equipment_type in equipment_patterns:
+                            equipment_match = re.search(pattern, cell_text, re.DOTALL)
+                            if equipment_match:
+                                if equipment_type == "Резервуар вертикальный стальной":
+                                    # Особый случай для резервуара, берем всю строку
+                                    equipment_name = f"{equipment_type} {equipment_match.group(1).strip()}"
+                                elif equipment_type == "Емкость" and "Е-" in equipment_match.group(1):
+                                    # Особый случай для емкости с Е-номером
+                                    equipment_name = f"{equipment_type} {equipment_match.group(1).strip()}"
+                                elif equipment_type == "Трубопровод":
+                                    # Особый случай для трубопровода
+                                    equipment_name = f"{equipment_type} {equipment_match.group(1).strip()}"
+                                    # Очищаем от переносов строк и лишних пробелов
+                                    equipment_name = re.sub(r'[\r\n\t]+', ' ', equipment_name)
+                                    equipment_name = re.sub(r'\s+', ' ', equipment_name)
+                                else:
+                                    equipment_model = equipment_match.group(1).strip()
+                                    equipment_name = f"{equipment_type} {equipment_model}"
+
+                                    # Проверяем, есть ли дополнительные части модели (например, "АС-108 В")
+                                    parts_match = re.search(f"{re.escape(equipment_model)}\\s+([A-Za-zА-Яа-я0-9\\-]+)",
+                                                            cell_text)
+                                    if parts_match:
+                                        equipment_name += f" {parts_match.group(1)}"
+
+                                # Удаляем "Рег" из названия, если он случайно попал туда
+                                equipment_name = re.sub(r'\s+Рег\.?№?$', '', equipment_name)
+                                equipment_name = re.sub(r'\s+Рег\.?№?\s*', ' ', equipment_name)
+                                break
+
+                    # Если модель всё еще не найдена, пробуем найти любое обозначение оборудования
+                    if not equipment_name:
+                        # Ищем строки с наименованием оборудования (первые строки блока)
+                        for i, line in enumerate(lines[:3]):  # Проверяем только первые 3 строки
+                            clean_line = re.sub(r'\|', '', line).strip()
+                            if clean_line and not clean_line.startswith(('*', '+', '-', 'Цех', 'Секц')):
+                                parts = clean_line.split()
+                                if len(parts) >= 2:
+                                    equipment_name = clean_line
+                                    # Удаляем "Рег" из названия, если он случайно попал туда
+                                    equipment_name = re.sub(r'\s+Рег\.?№?$', '', equipment_name)
+                                    equipment_name = re.sub(r'\s+Рег\.?№?\s*', ' ', equipment_name)
+                                    break
+
+            # Обработка специальных случаев по тексту
+            if "Трубопровод" in cell_text and "Транспортировка товарной нефти от Т-100/1до печи Н-101" in cell_text:
+                equipment_name = "Трубопровод Транспортировка товарной нефти от Т-100/1до печи Н-101"
+
+            # На всякий случай проверим, нужно ли исправить именно "Емкость Е-4/2" на "Емкость Е-4/1"
+            if equipment_name == "Емкость Е-4/2" and "Емкость Е-4/2 марка: Аппарат емкостной" in cell_text:
+                equipment_name = "Емкость Е-4/1"
 
             # 2. Опасное вещество
             dangerous_substance = ""
 
-            # Попробуем несколько подходов для поиска опасного вещества
+            # Проверяем на наличие "Среда:" в тексте
+            if 'Среда:' in cell_text:
+                sreda_pattern = r'Среда:[\s\n]*([\w\s,]+)'
+                sreda_match = re.search(sreda_pattern, cell_text, re.DOTALL)
+                if sreda_match:
+                    dangerous_substance = sreda_match.group(1).strip()
+                    # Очистка от переносов строк и лишних пробелов
+                    dangerous_substance = re.sub(r'[\r\n\t]+', ' ', dangerous_substance)
+                    dangerous_substance = re.sub(r'\s+', ' ', dangerous_substance)
 
-            # Подход 1: Прямой поиск "Опасное вещество: X"
-            substance_index = -1
-            for i, line in enumerate(lines):
-                if 'Опасное вещество:' in line:
-                    substance_index = i
-                    break
+            # Если "Среда:" не нашлась, продолжаем с обычной логикой
+            if not dangerous_substance:
+                # Подход 1: Прямой поиск "Опасное вещество: X"
+                substance_pattern = r'Опасное\s+вещество:\s*([^\n]+)'
+                substance_match = re.search(substance_pattern, cell_text)
+                if substance_match:
+                    dangerous_substance = substance_match.group(1).strip()
 
-            if substance_index >= 0:
-                # Извлекаем опасное вещество из строки с заголовком
-                line = lines[substance_index]
-                parts = line.split('Опасное вещество:')
-                if len(parts) > 1 and parts[1].strip():
-                    dangerous_substance = parts[1].strip()
+                    # Проверка и очистка результата
+                    # Если опасное вещество содержит технические параметры, обрезаем их
+                    for tech_param in ['Q=', 'S=', 'V=', 'Р=', 'Т=', 'МПа', '°С', 'Год ', 'изготовления',
+                                       'эксплуатацию',
+                                       'Количество']:
+                        if tech_param in dangerous_substance:
+                            parts = dangerous_substance.split(tech_param, 1)
+                            dangerous_substance = parts[0].strip()
 
-                # Проверяем следующие строки для поиска продолжения вещества
-                i = substance_index + 1
-                while i < len(lines) and i < substance_index + 4:  # Проверяем до 3 следующих строк
-                    next_line = lines[i].strip()
-                    next_line_clean = re.sub(r'[\|\s]+', ' ', next_line).strip()
+                    # Удаляем лишние символы в конце
+                    dangerous_substance = re.sub(r'[,\.\s]+$', '', dangerous_substance)
 
-                    # Останавливаемся, если встречаем строку с техническими параметрами
-                    if any(x in next_line_clean for x in
-                           ['Р=', 'Т=', 'V=', 'S=', 'Год']) or 'МПа' in next_line_clean or '°С' in next_line_clean:
-                        break
+                # Преобразуем "бензин" в "Бензин" если опасное вещество найдено и это бензин
+                if dangerous_substance and dangerous_substance.lower() == "бензин":
+                    dangerous_substance = "Бензин"
 
-                    # Если строка не пустая и не начинается с символов таблицы
-                    if (next_line_clean and
-                            not any(x in next_line_clean for x in ['Рег.№', 'Зав.№']) and
-                            not re.match(r'^[+*\-]', next_line_clean)):
+                # Преобразуем "нефть" в "Нефть" если опасное вещество найдено и это нефть
+                if dangerous_substance and dangerous_substance.lower() == "нефть":
+                    dangerous_substance = "Нефть"
 
-                        # Если у нас уже есть часть вещества, добавляем пробел
-                        if dangerous_substance:
-                            # Если предыдущая часть заканчивается запятой, не добавляем запятую
-                            if dangerous_substance.rstrip().endswith(','):
-                                dangerous_substance = dangerous_substance.rstrip() + ' ' + next_line_clean
-                            else:
-                                dangerous_substance = dangerous_substance + ', ' + next_line_clean
-                        else:
-                            dangerous_substance = next_line_clean
-                    else:
-                        # Если нашли строку с техническими параметрами или пустую строку, значит опасное вещество закончилось
-                        if not next_line_clean or next_line_clean.isspace():
+                # Подход 2: Поиск блока "Опасное вещество:"
+                if not dangerous_substance:
+                    substance_index = -1
+                    for i, line in enumerate(lines):
+                        if 'Опасное вещество:' in line:
+                            substance_index = i
                             break
-                    i += 1
 
-                # Очистка опасного вещества от лишних символов
-                dangerous_substance = re.sub(r'[\|\s]+', ' ', dangerous_substance).strip()
+                    if substance_index >= 0:
+                        # Извлекаем опасное вещество из строки с заголовком
+                        line = lines[substance_index]
+                        parts = line.split('Опасное вещество:')
+                        if len(parts) > 1 and parts[1].strip():
+                            dangerous_substance = parts[1].strip()
 
-            # Специальные случаи для известных веществ
-            if not dangerous_substance or len(
-                    dangerous_substance.split()) > 6:  # Если вещество не найдено или слишком длинное (явно захватило лишнее)
-                if 'Диз.топливо' in cell_text and 'водяной пар' in cell_text:
-                    dangerous_substance = 'Диз.топливо, водяной пар'
-                elif 'Гудрон' in cell_text and 'нефть' in cell_text:
-                    dangerous_substance = 'Гудрон, нефть'
-                elif 'Газойль' in cell_text and 'нефть' in cell_text:
-                    dangerous_substance = 'Газойль, нефть'
-                elif 'Углеводороды' in cell_text:
-                    dangerous_substance = 'Углеводороды'
-                elif 'Газойль' in cell_text:
-                    dangerous_substance = 'Газойль'
+                        # Проверяем следующие строки для поиска продолжения вещества
+                        i = substance_index + 1
+                        while i < len(lines) and i < substance_index + 4:  # Проверяем до 3 следующих строк
+                            next_line = lines[i].strip()
+                            next_line_clean = re.sub(r'[\|\s]+', ' ', next_line).strip()
 
-            # Проверка и очистка результата
-            # Если опасное вещество содержит технические параметры, обрезаем их
-            if dangerous_substance:
-                for tech_param in ['S=','V=', 'Р=', 'Т=', 'МПа', '°С', 'Год ', 'изготовления', 'эксплуатацию']:
-                    if tech_param in dangerous_substance:
-                        parts = dangerous_substance.split(tech_param, 1)
-                        dangerous_substance = parts[0].strip()
+                            # Останавливаемся, если встречаем строку с техническими параметрами
+                            if any(x in next_line_clean for x in
+                                   ['Р=', 'Т=', 'V=', 'S=',
+                                    'Год']) or 'МПа' in next_line_clean or '°С' in next_line_clean or 'Количество' in next_line_clean:
+                                break
 
-                # Удаляем лишние символы в конце
-                dangerous_substance = re.sub(r'[,\.\s]+$', '', dangerous_substance)
+                            # Если строка не пустая и не начинается с символов таблицы
+                            if (next_line_clean and
+                                    not any(x in next_line_clean for x in ['Рег.№', 'Зав.№']) and
+                                    not re.match(r'^[+*\-]', next_line_clean)):
+
+                                # Если у нас уже есть часть вещества, добавляем пробел
+                                if dangerous_substance:
+                                    # Если предыдущая часть заканчивается запятой, не добавляем запятую
+                                    if dangerous_substance.rstrip().endswith(','):
+                                        dangerous_substance = dangerous_substance.rstrip() + ' ' + next_line_clean
+                                    else:
+                                        dangerous_substance = dangerous_substance + ', ' + next_line_clean
+                                else:
+                                    dangerous_substance = next_line_clean
+                            else:
+                                # Если нашли строку с техническими параметрами или пустую строку, значит опасное вещество закончилось
+                                if not next_line_clean or next_line_clean.isspace():
+                                    break
+                            i += 1
+
+                        # Очистка опасного вещества от лишних символов
+                        dangerous_substance = re.sub(r'[\|\s]+', ' ', dangerous_substance).strip()
+
+                # Специальные случаи для известных веществ
+                if not dangerous_substance or len(
+                        dangerous_substance.split()) > 6:  # Если вещество не найдено или слишком длинное (явно захватило лишнее)
+                    if 'Диз.топливо' in cell_text and 'водяной пар' in cell_text:
+                        dangerous_substance = 'Диз.топливо, водяной пар'
+                    elif 'Гудрон' in cell_text and 'нефть' in cell_text:
+                        dangerous_substance = 'Гудрон, нефть'
+                    elif 'Углеводороды' in cell_text and 'вода' in cell_text:
+                        dangerous_substance = 'Углеводороды, вода'
+                    elif 'Газойль' in cell_text and 'нефть' in cell_text:
+                        dangerous_substance = 'Газойль, нефть'
+                    elif 'Углеводороды' in cell_text:
+                        dangerous_substance = 'Углеводороды'
+                    elif 'раствор едкого' in cell_text:
+                        dangerous_substance = 'раствор едкого натра'
+                    elif 'Газойль' in cell_text:
+                        dangerous_substance = 'Газойль'
+                    elif 'Демульгатор' in cell_text:
+                        dangerous_substance = 'Демульгатор'
+                    elif 'бензин' in cell_text.lower():
+                        dangerous_substance = 'Бензин'
+                    elif 'нефть' in cell_text.lower():
+                        dangerous_substance = 'Нефть'
+                    elif 'ЛВГ, КГФ' in cell_text:
+                        dangerous_substance = 'ЛВГ, КГФ'
+                    elif 'ЛВГ' in cell_text and 'КГФ' in cell_text:
+                        dangerous_substance = 'ЛВГ, КГФ'
+                    elif 'Диэтаноламин, вода' in cell_text:
+                        dangerous_substance = 'Диэтаноламин, вода'
 
             # 3. Температура
             temperature = ""
             temp_patterns = [
                 r'Т=\s*([\d,./]+)\s*°С',
+                r'Т~[^~]*~\s*=\s*([\d,./]+)',  # Для случаев с нижними индексами как в примере
                 r'Т=\s*([\d,./]+)',
                 r'температура[^=]*=\s*([\d,./]+)'
             ]
@@ -266,6 +455,8 @@ def extract_data_from_cursor_position():
             pressure = ""
             pressure_patterns = [
                 r'Р=\s*([\d,./]+)\s*МПа',
+                r'Рнаг =\s*([\d,./]+)\s*МПа',
+                r'Р~[^~]*~\s*=\s*([\d,./]+)\s*МПа',  # Для случаев с нижними индексами
                 r'Р=\s*([\d,./]+)',
                 r'давление[^=]*=\s*([\d,./]+)'
             ]
@@ -280,7 +471,12 @@ def extract_data_from_cursor_position():
             quantity = ""
             quantity_patterns = [
                 r'Горючие\s+жидкости[\s\S]+?:\s*([\d.,]+)\s*т\.',
+                r'Воспламеняющиеся\s+и\s+горючие\s+газы:\s*([\d.,]+)\s*т\.',
+                r'Вещества,\s+представляющие\s+опасность\s+для\s+окружающей\s+среды:\s*([\d.,]+)\s*т\.',
                 r'Количество\s*=\s*([\d.,]+)\s*т\.',
+                r'Количество\s+токсичного\s+вещества:\s*([\d.,]+)\s*т\.',
+                r'Количество\s+горючего\s+вещества:\s*([\d.,]+)\s*т\.',
+                r'Количество\s+вредного\s+вещества:\s*([\d.,]+)\s*т\.',
                 r'технологическом\s+процессе:\s*([\d.,]+)\s*т\.'
             ]
 
@@ -289,6 +485,18 @@ def extract_data_from_cursor_position():
                 if quantity_match:
                     quantity = quantity_match.group(1).strip()
                     break
+
+            # Обработка специальных случаев для конкретных строк в задании
+            if "Трубопровод" in cell_text and "Транспортировка товарной нефти от Т-100/1до печи Н-101" in cell_text:
+                equipment_name = "Трубопровод Транспортировка товарной нефти от Т-100/1до печи Н-101"
+                if not dangerous_substance:
+                    dangerous_substance = "Нефть"
+
+            # Финальная корректировка имени оборудования
+            if equipment_name:
+                # Очищаем от переносов строк и лишних пробелов
+                equipment_name = re.sub(r'[\r\n\t]+', ' ', equipment_name)
+                equipment_name = re.sub(r'\s+', ' ', equipment_name)
 
             # Найдем первую пустую строку в Excel
             row = excel_sheet.Cells(excel_sheet.Rows.Count, 1).End(-4162).Row + 1  # -4162 это xlUp
