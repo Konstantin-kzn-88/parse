@@ -338,7 +338,7 @@ def extract_data_from_cursor_position():
 
                     # Проверка и очистка результата
                     # Если опасное вещество содержит технические параметры, обрезаем их
-                    for tech_param in ['Q=', 'S=', 'V=', 'Р=', 'Т=', 'МПа', '°С', 'Год ', 'изготовления',
+                    for tech_param in ['Q=', 'S=', 'V=', 'Р=', 'Р =', 'Т=', 'МПа', '°С', 'Год ', 'изготовления',
                                        'эксплуатацию',
                                        'Количество']:
                         if tech_param in dangerous_substance:
@@ -379,7 +379,7 @@ def extract_data_from_cursor_position():
 
                             # Останавливаемся, если встречаем строку с техническими параметрами
                             if any(x in next_line_clean for x in
-                                   ['Р=', 'Т=', 'V=', 'S=',
+                                   ['Р=', 'Р =', 'Т=', 'V=', 'S=',
                                     'Год']) or 'МПа' in next_line_clean or '°С' in next_line_clean or 'Количество' in next_line_clean:
                                 break
 
@@ -405,6 +405,20 @@ def extract_data_from_cursor_position():
 
                         # Очистка опасного вещества от лишних символов
                         dangerous_substance = re.sub(r'[\|\s]+', ' ', dangerous_substance).strip()
+
+                        # ИСПРАВЛЕНИЕ: Улучшенная очистка для трубопроводов с "углеводороды жидкие бензин"
+                        # Удаляем все технические параметры, которые могли попасть в опасное вещество
+                        if "углеводороды жидкие бензин" in dangerous_substance:
+                            dangerous_substance = "углеводороды жидкие бензин"
+
+                        # Общая проверка на наличие технических параметров в тексте опасного вещества
+                        if re.search(r'[РР]\s*=', dangerous_substance) or 'МПа' in dangerous_substance:
+                            # Разделить по первому техническому параметру
+                            tech_params = ['Р=', 'Р =', 'P=', 'P =', 'МПа']
+                            for param in tech_params:
+                                if param in dangerous_substance:
+                                    dangerous_substance = dangerous_substance.split(param)[0].strip()
+                                    break
 
                 # Специальные случаи для известных веществ
                 if not dangerous_substance or len(
@@ -435,7 +449,10 @@ def extract_data_from_cursor_position():
                         dangerous_substance = 'ЛВГ, КГФ'
                     elif 'Диэтаноламин, вода' in cell_text:
                         dangerous_substance = 'Диэтаноламин, вода'
-
+                    elif 'Моющая присадка' in cell_text:
+                        dangerous_substance = 'Моющая присадка'
+                    elif 'углеводороды жидкие бензин' in cell_text:
+                        dangerous_substance = 'углеводороды жидкие бензин'
             # 3. Температура
             temperature = ""
             temp_patterns = [
@@ -455,6 +472,7 @@ def extract_data_from_cursor_position():
             pressure = ""
             pressure_patterns = [
                 r'Р=\s*([\d,./]+)\s*МПа',
+                r'Р = \s*([\d,./]+)\s*Мпа',
                 r'Рнаг =\s*([\d,./]+)\s*МПа',
                 r'Р~[^~]*~\s*=\s*([\d,./]+)\s*МПа',  # Для случаев с нижними индексами
                 r'Р=\s*([\d,./]+)',
